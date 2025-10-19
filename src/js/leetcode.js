@@ -125,6 +125,7 @@ const getCustomCommitMessage = problemContext => {
  */
 async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
   if (!topicTags) {
+    console.log('No topic tags provided');
     return;
   }
 
@@ -138,7 +139,6 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
   let newSha = '';
 
   try {
-    // Attempt to fetch the README file
     const { content, sha } = await getUpdatedData(
       leethub_token,
       leethub_hook,
@@ -148,13 +148,10 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
     );
     newSha = sha;
     readme = decodeURIComponent(escape(atob(content)));
-
-    // Update the SHA in stats
     stats.shas[readmeFilename] = { '': sha };
     await chrome.storage.local.set({ stats });
   } catch (err) {
     if (err.message === '404') {
-      // If README.md doesn't exist, create it
       const initialContent = btoa(unescape(encodeURIComponent(defaultRepoReadme)));
       const uploadResponse = await upload(
         leethub_token,
@@ -167,20 +164,19 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
         undefined,
         false
       );
-
-      // Update the SHA after creating the file
       newSha = uploadResponse.content.sha;
       readme = defaultRepoReadme;
 
       stats.shas[readmeFilename] = { '': newSha };
       await chrome.storage.local.set({ stats });
     } else {
-      throw err; // Re-throw other errors
+      console.log(`Error fetching README: ${err.message}`);
+      return;
     }
   }
 
   for (const topic of topicTags) {
-    readme = appendProblemToReadme(topic.name, readme, leethub_hook, problemName);
+    readme = await appendProblemToReadme(topic.name, readme, leethub_hook, problemName);
   }
 
   readme = sortTopicsInReadme(readme);
@@ -188,7 +184,6 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
   const encodedReadme = btoa(unescape(encodeURIComponent(readme)));
 
   try {
-    // Attempt to upload the updated README
     return await upload(
       leethub_token,
       leethub_hook,
@@ -203,7 +198,7 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
   } catch (err) {
     if (err.message === '409') {
       // Handle 409 Conflict by fetching the latest SHA and retrying
-      console.warn(`Conflict detected for ${readmeFilename}. Fetching latest SHA...`);
+      console.log(`Conflict detected for ${readmeFilename}. Fetching latest SHA...`);
       const { sha: latestSha } = await getUpdatedData(
         leethub_token,
         leethub_hook,
@@ -223,7 +218,8 @@ async function updateReadmeTopicTagsWithProblem(topicTags, problemName) {
         false
       );
     } else {
-      throw err; // re-throw other errors
+        console.log(`Error updating README: ${err.message}`);
+        return;
     }
   }
 }
@@ -273,9 +269,8 @@ const upload = (
     .then(res => {
       if (res.status === 200 || res.status === 201) {
         return res.json();
-      } else if (res.status === 409) {
-        throw new Error('409');
       }
+      throw new Error(res.status);
     })
     .then(async body => {
       updatedSha = body.content.sha; // get updated SHA.
@@ -491,12 +486,18 @@ async function getUpdatedData(token, hook, problem, filename, useDifficultyFolde
     },
   };
 
-  return fetch(URL, options).then(res => {
+return fetch(URL, options)
+  .then(res => {
     if (res.status === 200 || res.status === 201) {
       return res.json();
     } else {
-      throw new Error('' + res.status);
+      console.log(`Fetch failed with status: ${res.status}`);
+      return {};
     }
+  })
+  .catch(err => {
+    console.log(`Fetch error: ${err.message}`);
+    return {};
   });
 }
 
@@ -1412,7 +1413,7 @@ const loader = (leetCode, suffix) => {
       uploadState.uploading = false;
       leetCode.markUploadFailed();
       clearInterval(intervalId);
-      console.error(err);
+      console.log(err);
     }
   }, 1000);
 };
@@ -1481,13 +1482,13 @@ setTimeout(() => {
  *
  * @returns {string} - The updated markdown file content.
  */
-function appendProblemToReadme(topic, markdownFile, hook, problem) {
+async function appendProblemToReadme(topic, markdownFile, hook, problem) {
+  const { useDifficultyFolder = false } = await chrome.storage.local.get('useDifficultyFolder');
 
-  const useDifficultyFolder = chrome.storage.local.get('useDifficultyFolder') || false;
-
-  let path = `${basePath}/`;
-  path += useDifficultyFolder ? `${difficulty}/` : '';
-  path += `${problem}`;
+  const filePath = problem ? `${problem}/` : '';
+  const path = useDifficultyFolder
+    ? `${basePath}/${difficulty}/${filePath}`
+    : `${filePath}`;
 
   const url = `https://github.com/${hook}/tree/main/${path}`;
 
